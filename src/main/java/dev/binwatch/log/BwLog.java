@@ -17,7 +17,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * BIN Watch logger. Every message is passed through {@link Redactor} before it reaches any sink, so secrets cannot
- * leak through logs. Messages go to the game log (SLF4J) and to a size-rotated file. Repeated errors with the same key
+ * leak through logs. Messages go to the game log (SLF4J), or the console in the standalone app, and to a size-rotated file. Repeated errors with the same key
  * are throttled so a persistent failure cannot flood the logs.
  */
 public final class BwLog {
@@ -25,7 +25,22 @@ public final class BwLog {
 		DEBUG, INFO, WARN, ERROR
 	}
 
-	private static final Logger SLF4J = LoggerFactory.getLogger("BINWatch");
+	/** Loaded only when the game log is used, so the standalone app does not need SLF4J on its classpath. */
+	private static final class GameLog {
+		static final Logger SLF4J = LoggerFactory.getLogger("BINWatch");
+
+		static void write(Level level, String line) {
+			switch (level) {
+				case DEBUG -> SLF4J.info("[debug] {}", line);
+				case INFO -> SLF4J.info(line);
+				case WARN -> SLF4J.warn(line);
+				case ERROR -> SLF4J.error(line);
+			}
+		}
+	}
+
+	/** Where lines go besides the file: null for the game log (the mod), a console printer in the standalone app. */
+	private static volatile java.util.function.BiConsumer<Level, String> output;
 	private static final long REPEAT_WINDOW_MS = 60_000;
 
 	private static volatile Level minLevel = Level.INFO;
@@ -58,7 +73,7 @@ public final class BwLog {
 				openWriter();
 			} catch (IOException e) {
 				logFile = null;
-				SLF4J.warn("BIN Watch file logging unavailable: {}", e.toString());
+				out(Level.WARN, "BIN Watch file logging unavailable: " + e);
 			}
 		}
 	}
@@ -124,11 +139,10 @@ public final class BwLog {
 		}
 		String safe = Redactor.redact(msg);
 		String err = t == null ? null : Redactor.redact(t.toString());
-		switch (level) {
-			case DEBUG -> SLF4J.info("[debug] {}", safe);
-			case INFO -> SLF4J.info(safe);
-			case WARN -> SLF4J.warn(safe);
-			case ERROR -> SLF4J.error(err == null ? safe : safe + " : " + err);
+		try {
+			out(level, err == null ? safe : safe + " : " + err);
+		} catch (RuntimeException ignored) {
+			// The output must never break logging.
 		}
 		writeFile(level, safe, err);
 		java.util.function.BiConsumer<Level, String> s = sink;
@@ -148,6 +162,20 @@ public final class BwLog {
 		sink = s;
 	}
 
+	/** Replaces the game log as the non-file output (lines are already redacted). Call before anything is logged. */
+	public static void setOutput(java.util.function.BiConsumer<Level, String> out) {
+		output = out;
+	}
+
+	private static void out(Level level, String line) {
+		java.util.function.BiConsumer<Level, String> o = output;
+		if (o == null) {
+			GameLog.write(level, line);
+		} else {
+			o.accept(level, line);
+		}
+	}
+
 	private static void writeFile(Level level, String msg, String err) {
 		if (logFile == null) {
 			return;
@@ -165,7 +193,7 @@ public final class BwLog {
 					rotate();
 				}
 			} catch (IOException e) {
-				SLF4J.warn("BIN Watch log write failed: {}", e.toString());
+				out(Level.WARN, "BIN Watch log write failed: " + e);
 			}
 		}
 	}

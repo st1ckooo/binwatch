@@ -43,6 +43,10 @@ public final class AuctionCollector {
 
 		/** Called after each poll that retrieved a changed snapshot. */
 		void onSnapshot(SnapshotSummary summary);
+
+		/** BIN auctions from {@code auctions_ended} seen for the first time (each sale once), before onSnapshot. */
+		default void onEnded(List<EndedAuction> sold) {
+		}
 	}
 
 	public record FirstSeen(ApiAuction auction, NormalizedItem item, ApiObservation row) {
@@ -54,11 +58,12 @@ public final class AuctionCollector {
 	 * @param burstProbes  page-0 probes it took to see this snapshot (0 when found by a plain poll)
 	 * @param staleRetries pages re-fetched because they still showed an older snapshot
 	 * @param newListings  first-seen auctions created while the collector was running
+	 * @param page0ReceivedMs local time the snapshot's page 0 was fully received
 	 */
 	public record SnapshotSummary(long pollId, String snapshotId, long lastUpdatedMs, SnapshotStatus status,
 			int totalPages, int pagesFetched, List<Integer> failedPages, int auctionsSeen, int firstSeen,
 			long startedMs, long finishedMs, String note, Long detectLagMs, int burstProbes, int staleRetries,
-			int newListings) {
+			int newListings, long page0ReceivedMs) {
 	}
 
 	public enum PollOutcome {
@@ -599,7 +604,7 @@ public final class AuctionCollector {
 		staleRetriesTotal.addAndGet(staleRetries.get());
 		SnapshotSummary summary = new SnapshotSummary(pollId, snapshotId, p0.lastUpdatedMs(), status, total, fetched,
 				List.copyOf(failed), seenThisPoll.size(), firstSeenCount[0], started, finished, note, detectLag,
-				detection.burstProbes(), staleRetries.get(), newCount.get());
+				detection.burstProbes(), staleRetries.get(), newCount.get(), p0.receivedAtMs());
 		lastSummary = summary;
 		lastSuccessfulPollMs = finished;
 		lastError = status == SnapshotStatus.INCOMPLETE ? note : null;
@@ -763,10 +768,12 @@ public final class AuctionCollector {
 			return;
 		}
 		List<Records.Sale> rows = new ArrayList<>();
+		List<EndedAuction> fresh = new ArrayList<>();
 		for (EndedAuction e : ended.auctions()) {
 			if (!e.bin() || !seenEndedIds.add(e.auctionId())) {
 				continue;
 			}
+			fresh.add(e);
 			try {
 				ItemNormalizer.ItemBytes ib = ItemNormalizer.firstItem(Nbt.decodeBase64Gzip(e.itemBytes()));
 				if (ib == null) {
@@ -789,6 +796,11 @@ public final class AuctionCollector {
 		}
 		if (seenEndedIds.size() > 50_000) {
 			seenEndedIds.clear();
+		}
+		try {
+			listener.onEnded(fresh);
+		} catch (RuntimeException ex) {
+			BwLog.throttled(BwLog.Level.ERROR, "listener-ended", "Ended-auction listener failed", ex);
 		}
 		try {
 			int n = store.insertSales(rows);

@@ -180,7 +180,8 @@ public final class SummaryPublisher {
 		return null;
 	}
 
-	static String hookHash(String url) {
+	/** Short SHA-256 prefix of a webhook URL: tells webhooks apart without storing the URL. */
+	public static String hookHash(String url) {
 		try {
 			byte[] d = MessageDigest.getInstance("SHA-256").digest(url.trim().getBytes(StandardCharsets.UTF_8));
 			return HexFormat.of().formatHex(d, 0, 8);

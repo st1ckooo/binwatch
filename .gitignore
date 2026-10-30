@@ -20,6 +20,9 @@ secrets.json
 *.csv
 logs/
 
+# Standalone app: config, webhook, database, board state and logs
+/binwatch-data/
+
 # Local-only files
 config.json
 *.log

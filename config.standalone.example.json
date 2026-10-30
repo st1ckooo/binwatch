@@ -1,0 +1,184 @@
+{
+  "configVersion": 1,
+  "api": {
+    "enabled": true,
+    "pollIntervalSeconds": 60,
+    "unchangedRecheckSeconds": 10,
+    "alignToSnapshotCadence": true,
+    "snapshotTimedPolling": true,
+    "preWakeMs": 2000,
+    "burstIntervalMs": 100,
+    "maxBurstMs": 20000,
+    "pageRetries": 3,
+    "staleRetryDelayMs": 250,
+    "maxConcurrentPageRequests": 8,
+    "maxRetries": 3,
+    "retryBaseDelayMs": 1000,
+    "retryMaxDelayMs": 30000,
+    "connectTimeoutSeconds": 10,
+    "requestTimeoutSeconds": 30,
+    "fetchEndedAuctions": true,
+    "clockSkewToleranceMs": 5000
+  },
+  "valuation": {
+    "sources": [
+      "LOWEST_BIN",
+      "ENDED_AUCTIONS"
+    ],
+    "targetComparableListings": 5,
+    "minSalesSamples": 3,
+    "targetSalesSamples": 10,
+    "salesLookbackHours": 72,
+    "undercutPercent": 1.0,
+    "maxIndexAgeSeconds": 300,
+    "suspiciousDiscountPercent": 80.0,
+    "includeReforgeInKey": false,
+    "valueAttributes": [
+      "rarity_upgrades",
+      "upgrade_level",
+      "dungeon_item_level",
+      "hot_potato_count",
+      "art_of_war_count",
+      "farming_for_dummies_count",
+      "ethermerge",
+      "power_ability_scroll",
+      "skin",
+      "dye_item",
+      "gems",
+      "attributes",
+      "talisman_enrichment",
+      "mana_disintegrator_count",
+      "jalapeno_count",
+      "wood_singularity_count",
+      "polarvoid",
+      "new_years_cake",
+      "edition",
+      "drill_part_upgrade_module",
+      "drill_part_fuel_tank",
+      "drill_part_engine",
+      "model",
+      "ability_scroll",
+      "divan_powder_coating",
+      "tuned_transmission",
+      "thunder_charge",
+      "stats_book",
+      "champion_combat_xp",
+      "farmed_cultivating",
+      "compact_blocks",
+      "expertise_kills",
+      "hecatomb_s_runs",
+      "toxophilite_combat_xp",
+      "blood_god_kills"
+    ]
+  },
+  "fees": {
+    "listingFeeTiers": [
+      {
+        "upToPrice": 10000000,
+        "percent": 1.0
+      },
+      {
+        "upToPrice": 100000000,
+        "percent": 2.0
+      },
+      {
+        "percent": 2.5
+      }
+    ],
+    "claimTaxPercent": 1.0,
+    "claimTaxThreshold": 1000000,
+    "extraCostPerFlip": 0
+  },
+  "filters": {
+    "minNetProfit": 1000000,
+    "minDiscountPercent": 10.0,
+    "minConfidence": 0.6,
+    "maxPurchasePrice": 0,
+    "excludedItemIds": [],
+    "excludedNameKeywords": [],
+    "alertOnPreexisting": false
+  },
+  "discord": {
+    "enabled": false,
+    "embedColor": 3066993,
+    "colorByRarity": true,
+    "itemImages": true,
+    "itemImageUrl": "https://sky.coflnet.com/static/icon/{id}",
+    "maxAlertsPerMinute": 10,
+    "maxAlertsPerHour": 120,
+    "queueCapacity": 50,
+    "itemCooldownSeconds": 300,
+    "maxSendAttempts": 3,
+    "requestTimeoutSeconds": 15,
+    "maxQueuedAgeSeconds": 120
+  },
+  "chat": {
+    "alerts": false
+  },
+  "autoView": {
+    "enabled": false,
+    "autoJoinSkyblock": true,
+    "minGapMs": 2000,
+    "maxAgeSeconds": 30,
+    "resultTimeoutMs": 5000,
+    "fullReady": false
+  },
+  "market": {
+    "enabled": true,
+    "provider": "COFL",
+    "baseUrl": "https://sky.coflnet.com",
+    "requireWorthIt": true,
+    "alertWhenUnavailable": true,
+    "minDailySales": 1.0,
+    "maxSellHours": 48.0,
+    "undercutPercent": 1.0,
+    "maxRequestsPerMinute": 60,
+    "requestTimeoutMs": 3000,
+    "prefilterMinNetProfit": 250000,
+    "prefilterMinDiscountPercent": 3.0,
+    "prefilterMinConfidence": 0.3
+  },
+  "summary": {
+    "enabled": false,
+    "updateSeconds": 60,
+    "topCount": 10
+  },
+  "discordBot": {
+    "enabled": false,
+    "alertsChannelId": "",
+    "tradesChannelId": "",
+    "summaryChannelId": "",
+    "logChannelId": "",
+    "slashCommands": true
+  },
+  "board": {
+    "enabled": true,
+    "maxFlips": 8,
+    "minProfitPercent": 0.0,
+    "minEditIntervalMs": 1500,
+    "maxTracked": 200
+  },
+  "profit": {
+    "enabled": true,
+    "postEachResult": true,
+    "maxFollowMinutes": 60,
+    "topCount": 5,
+    "keepDays": 30
+  },
+  "storage": {
+    "retentionDays": 3,
+    "maxApiObservationRows": 1000000,
+    "salesRetentionDays": 7
+  },
+  "logging": {
+    "level": "INFO",
+    "logEveryFirstSeen": false,
+    "maxFileSizeMb": 5,
+    "maxFiles": 5
+  },
+  "export": {
+    "autoExportCsv": false,
+    "autoExportIntervalMinutes": 60,
+    "maxRowsPerFile": 200000
+  }
+}
