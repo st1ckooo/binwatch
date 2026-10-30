@@ -6,6 +6,8 @@ BIN Watch is a client-side Fabric mod for **Minecraft Java Edition 26.2** that w
 - estimates possible resale value and profit,
 - sends qualifying alerts to a Discord webhook.
 
+It also comes as a **[standalone console app](#standalone-app-no-minecraft)** that runs the same engine without Minecraft and keeps one live "AH Flipper" message in Discord.
+
 **It never buys or bids.** It never clicks a slot, modifies packets, or uses private or undocumented endpoints. The only commands it ever sends for you are `/viewauction`, `/play skyblock` and `/lobby`, and only while the optional [auto-open](#auto-open-and-speed-check) is switched on (it is off by default). Every alert is an *estimate*, not a guaranteed profit. Verify any listing in game before you act on it.
 
 ---
@@ -26,8 +28,9 @@ BIN Watch is a client-side Fabric mod for **Minecraft Java Edition 26.2** that w
 11. [Commands and GUI](#commands-and-gui)
 12. [Configuration](#configuration)
 13. [Data, exports and reports](#data-exports-and-reports)
-14. [Building and testing from source](#building-and-testing-from-source)
-15. [Troubleshooting](#troubleshooting)
+14. [Standalone app (no Minecraft)](#standalone-app-no-minecraft)
+15. [Building and testing from source](#building-and-testing-from-source)
+16. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -114,9 +117,10 @@ During live testing, the CDN often served pages from two snapshot versions in on
 
 | Part | Needs Minecraft running? | Needs to be on Hypixel? | Needs the Auction House open? |
 |---|---|---|---|
-| API collector | Yes (it lives inside the mod) | No; it runs from the title screen too | No |
-| Flip scoring and Discord alerts | Yes | No | No |
+| API collector | Yes in the mod; **no** with the [standalone app](#standalone-app-no-minecraft) | No; it runs from the title screen too | No |
+| Flip scoring and Discord alerts | Yes in the mod; **no** with the standalone app | No | No |
 | Reports and CSV export | Yes (commands) | No | No |
+| Auto-open, profit banner, full ready, trade tracking | Yes: these act on the game, so they only exist in the mod | Yes | Yes |
 
 ---
 
@@ -599,6 +603,181 @@ The database is H2 with a versioned schema (`meta.schema_version`). It is transa
 
 ---
 
+## Standalone app (no Minecraft)
+
+A console program that runs BIN Watch's own collector, valuation, filters and SkyCofl market check without Minecraft, Fabric or a game window. It keeps **one** Discord message titled **AH Flipper** up to date with the best opportunities that are still listed. Like the mod it is read-only: it never buys, bids, or connects to the game.
+
+### What is reused and what is not
+
+Everything that decides what a flip is comes unchanged from the mod:
+- the paginated collector with snapshot-timed polling (`api/`)
+- item decoding and normalisation (`item/`, `nbt/`)
+- the valuation, fees, filters and exclusions (`value/`)
+- the SkyCofl check (`market/`)
+- the database (`store/`)
+- the alert rules in `BinWatchService`
+
+Profit means exactly what it means in the mod: SkyCofl's net profit after fees when the market check ran, otherwise the local estimate after fees.
+
+Only the `client/` package depends on Minecraft: chat, the auto-open, the profit banner, full ready and AH chat tracking. Those act on the game, so the standalone app does not have them. Trade tracking needs the game's chat, so the profit summary stays empty here and is off by default.
+
+The data source is the official Hypixel API: `GET /v2/skyblock/auctions` (all pages) and `/v2/skyblock/auctions_ended`. Both are public and need no key, so **no API key is asked for**. Hypixel publishes a new snapshot about every 60 seconds, and the app cannot see a listing before Hypixel publishes it.
+
+| Part | Where |
+|---|---|
+| `main`: startup, first run, lifecycle, Ctrl+C | `standalone/StandaloneMain.java`, `standalone/FirstRunSetup.java` |
+| `data_source`: requests, pagination, retries, caching | `api/AuctionApiClient.java`, `api/AuctionCollector.java` (the unchanged engine) |
+| `flipper`: detection and profit | `value/`, `market/`, `service/BinWatchService.java` (unchanged rules) |
+| `tracker`: current opportunities, dedupe, ranking | `standalone/FlipBoard.java` |
+| `discord_publisher`: embed, create and edit, 429 | `standalone/BoardEmbed.java`, `standalone/BoardPublisher.java` |
+| `metrics` | `standalone/Metrics.java` |
+| `config` | `config/BinWatchConfig.java` (new `board` section), `config/Secrets.java` |
+
+### Install and launch
+
+You need Java 25 (check with `java -version`). Build the jar once:
+
+```bash
+./gradlew standaloneJar
+```
+
+It is written to `build/libs/binwatch-standalone-1.0.0.jar`. The jar is about 3.4 MB and holds the engine plus Gson and H2. Run it:
+
+```bash
+java -jar build/libs/binwatch-standalone-1.0.0.jar
+```
+
+On Windows you can double-click `run-standalone.bat`, which builds the jar if needed and starts it. `./run-standalone.sh` does the same on Linux and macOS.
+
+Stop it with **Ctrl+C**. The Discord message then switches to "Stopped", so nobody mistakes it for live data.
+
+| Option | Effect |
+|---|---|
+| `--dry-run` | Scans and builds the embed, but sends nothing to Discord (no board, no alerts, no bot) |
+| `--setup` | Enter the webhook and the main thresholds again |
+| `--dir <path>` | Where config, data and logs live (default `./binwatch-data`) |
+| `--verbose` | Also print the detailed log lines |
+| `--run-for <s>` | Stop after that many seconds (used for benchmarks) |
+
+### First run
+
+1. It creates `binwatch-data/config/config.json` with standalone defaults. The format is the same as the mod's; see `config.standalone.example.json`.
+2. It asks for the Discord webhook URL, with the input hidden. It checks the webhook with Discord using a `GET` of the webhook, which posts nothing, and shows you the webhook's name.
+3. It saves the webhook to `binwatch-data/config/secrets.json`, readable only by your user (an owner-only ACL on Windows, `chmod 600` elsewhere). The `BINWATCH_DISCORD_WEBHOOK_URL` environment variable overrides it.
+4. It asks for the minimum profit, the minimum discount and how many flips to show. Press Enter to keep each default.
+5. It starts scanning.
+
+The webhook URL is never printed or logged. Without a terminal (for example when run as a service), set the environment variable or the secrets file first. Otherwise it stops with a clear message.
+
+### Configuration
+
+All of the mod's settings apply: `filters.*`, `fees.*`, `valuation.*`, `market.*`, `api.*` and `logging.level`. Changes to `config.json` apply within 3 seconds. The main ones:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `filters.minNetProfit` | 1M | Minimum profit after fees |
+| `filters.minDiscountPercent` | 10 | Minimum price below the estimated resale, in % |
+| `filters.minConfidence` | 0.6 | Minimum valuation confidence |
+| `filters.excludedItemIds`, `excludedNameKeywords`, `maxPurchasePrice` | none | Exclusions |
+| `market.enabled` | true | SkyCofl check before a flip counts (see [Market check](#market-check-and-listing-advice)) |
+| `board.maxFlips` | 8 | Flips shown in the message (1 to 20). The rest stay tracked |
+| `board.minProfitPercent` | 0 | Extra filter for the board: profit as % of the buy price |
+| `board.minEditIntervalMs` | 1500 | Minimum gap between edits. Changes in between become one edit |
+| `board.maxTracked` | 200 | Opportunities kept in memory |
+| `discord.enabled` | false | Also send the mod's one-message-per-flip alerts to the same webhook |
+| `logging.level` | INFO | Detail of `binwatch-data/logs/binwatch.log` |
+
+### The Discord message
+
+There is one message. It is created on the first run and edited after that. Its id is stored in the database together with a hash of the webhook:
+- a restart edits the same message
+- a new webhook starts a new message
+- if someone deletes the message, the next update posts a new one
+
+What the message shows:
+- The title **AH Flipper**, the scanner status (Starting, Scanning, Data problem or Stopped), the age of the latest snapshot, and the number of opportunities tracked.
+- For each flip:
+  - the item, buy price and resale
+  - the profit after fees, with the percentage of the buy price
+  - whether SkyCofl checked it, and the suggested listing time
+  - when it was seen and when the auction ends
+  - `/viewauction <uuid>` to open it in game. No web link is made up for an auction; the command is the reliable way to open it.
+- Ages use Discord's relative timestamps, which every viewer's client keeps current. The message does not need edits just to update "x seconds ago".
+- With no opportunities it says so, instead of showing old results.
+
+Updates are coalesced. A change only asks for a publish, and one worker sends the newest board when it is allowed to. Any number of changes during a slow or rate-limited request become a single edit, and nothing is sent when nothing visible changed. Scanning never waits for Discord.
+
+How failures are handled:
+- HTTP 429: it waits the time Discord asks for.
+- Discord reports the webhook's bucket as empty: it waits for the reset instead of causing a 429.
+- Other failures: it backs off from 2 s up to 60 s.
+- A rejected webhook (401, 403, 404): it retries every 5 minutes.
+
+### Which flips are on the board
+
+A flip joins the board when it passes the same filters and market check that make the mod alert it. It leaves when either:
+- a **complete** snapshot no longer lists the auction (bought, cancelled or expired), or
+- its end time passes.
+
+A partial snapshot cannot prove an auction is gone, so it removes nothing. The same auction is never listed twice.
+
+Auctions that already existed when the app started are not opportunities (the mod's `alertOnPreexisting` rule), so a restart never floods the board. The board is saved to `binwatch-data/data/board.json`. After a restart, saved entries are shown as "not re-checked yet" until the first complete snapshot confirms or removes them.
+
+### Console output and timings
+
+```
+22:05:15 [FLIPS] New: Anita's Artifact | buy 10M -> resale 12.4M | profit 2M (20.0%) | SkyCofl checked | 247 ms after its page arrived
+22:05:17 [SCAN] Snapshot 22:05:06 COMPLETE: 44,719 auctions, 45/45 pages, 93 new listings, snapshot 8.1 s old when detected, page 0 received 328 ms (+/-55) after Hypixel published it
+22:05:17 [PROCESS] Valued 153 listing(s) in 32.9 ms CPU; all pages fetched and processed 2232 ms after page 0
+22:05:17 [METRICS] Board 1 | Candidates 153 | Discord 118 ms | API errors 0 | API retries 0 | Rate limits 0
+```
+
+Four moments are kept apart:
+
+| Moment | Shown as |
+|---|---|
+| Hypixel's snapshot time (`lastUpdated`) | "Snapshot 22:05:06" |
+| When Hypixel actually started serving it | "Hypixel published it". This is bracketed between the last probe that still got the old snapshot and the first that got the new one |
+| When the app received the page | "page 0 received … after Hypixel published it". "Snapshot … old when detected" is measured from `lastUpdated` |
+| When processing finished, and when Discord confirmed the edit | `[FLIPS] … ms after its page arrived` and `[DISCORD] Embed updated in … ms (… ms after the page with the change was received)` |
+
+Hypixel stamps `lastUpdated` several seconds before it publishes, so "snapshot 8 s old when detected" is mostly Hypixel's own delay. The figure the app controls is the time from publication. Durations inside the app use a monotonic clock. Ctrl+C prints the median, p95 and maximum of every measurement.
+
+### Measured performance (2026-10-30)
+
+**Live, dry run:** `--dry-run --run-for 600` against the real Hypixel API, from 22:11 to 22:21 local time, on a Windows 11 desktop over a home connection, with Java 25. Snapshot-timed polling and 8 parallel page requests (the defaults). Each snapshot was about 44,600 auctions on 45 pages. SkyCofl was on.
+
+| Measurement | Median | p95 / max | Samples |
+|---|---|---|---|
+| Hypixel published the snapshot → page 0 received | 581 ms | 741 ms | 10 |
+| Snapshot `lastUpdated` → page 0 received (mostly Hypixel's own publish delay) | 8.6 s | 17.0 s (the first poll after start-up) | 11 |
+| Page 0 → all 45 pages fetched and processed | 2.2 s | 4.7 s | 11 |
+| Valuation CPU per snapshot (about 112 new listings) | 6.0 ms | 35 ms | 11 |
+| Valuation CPU for the start-up baseline (41,953 listings) | 35 ms | | 1 |
+| Page received → flip on the board, including the SkyCofl check | 141 ms | 3,044 ms | 4 |
+| Building the embed | 0.36 ms | 2.7 ms | 17 |
+
+- Result: 11 snapshots (9 complete, 2 inconsistent, 0 incomplete) and 0 API errors, retries or rate limits.
+- Real flips put on the board:
+  - an Elephant pet, +5.7M
+  - a Kingfisher Dye, +2.4M
+  - a Hydromax, +1.2M
+  - a Hooverius, +1.5M
+- 3 of them sold within a minute, and were removed at the next complete snapshot.
+- The 3,044 ms case was one SkyCofl request that hit its 3 s timeout (`market.requestTimeoutMs`). That flip was then judged on the local estimate.
+- New listings are valued as page 0 streams in, so a flip reaches the board before the remaining pages finish downloading.
+
+Discord timings are not in this run: the dry run sends nothing, and the real webhook was not used for testing. A normal run prints `[DISCORD] Embed updated in … ms` for every edit, and the Ctrl+C summary includes the request time and the time from the page arriving to Discord's confirmation. For reference, the mod's own alert POSTs to Discord took about 300 ms.
+
+**Offline (unit test `processesARepresentativeSnapshotQuickly`):** scripted pages with 20,000 listings over 20 pages and 400 item types, on the same machine.
+
+| Measurement | Time |
+|---|---|
+| Baseline snapshot of 20,000 listings: parse, decode, store and value | 1.45 to 1.96 s |
+| Next snapshot of 20,300 listings: parse and store everything, value the 300 new ones | 169 to 197 ms, of which valuation CPU was 26 to 36 ms |
+
+---
+
 ## Building and testing from source
 
 Requirements: JDK 25 on `PATH` or `JAVA_HOME`. Gradle is provided by the wrapper.
@@ -613,7 +792,7 @@ The JAR is written to `build/libs/binwatch-1.0.0.jar`. The `-sources.jar` next t
 ./gradlew test
 ```
 
-Runs 80 offline tests. They use fake HTTP transports, in-memory or temporary databases, and a controllable clock.
+Runs 96 offline tests. They use fake HTTP transports, in-memory or temporary databases, and a controllable clock.
 
 ```bash
 ./gradlew test --tests dev.binwatch.LiveApiTest -Dbinwatch.liveTest=true
@@ -650,7 +829,14 @@ The tests cover:
 - AH chat parsing and the trade ledger from purchase to collection,
 - the profit summary, posted once and then edited in place (and re-posted if deleted),
 - the auction-screen profit banner text and `/viewauction` matching,
-- the Discord bot: channel routing with the bot token, summary editing in a bot channel, the background feed, token validation and redaction.
+- the Discord bot: channel routing with the bot token, summary editing in a bot channel, the background feed, token validation and redaction,
+- the standalone app: board add, change and remove, dedupe, ranking, the % and size caps; removal only on complete snapshots; restart recovery; embed limits, empty state and coin format; post once then edit, unchanged skips, re-posting a deleted message, 429 waits, back-off on a rejected webhook; 200 changes during a slow Discord request becoming one edit without blocking the scan; dry run never calling Discord; first-run webhook check (GET only, never echoed); invalid config and missing webhook; the whole pipeline from scripted Hypixel pages to Discord, including a restart that edits the same message; and a 20,000-listing snapshot processing benchmark.
+
+```bash
+./gradlew standaloneJar
+```
+
+Builds the standalone app (see [Standalone app](#standalone-app-no-minecraft)). `./gradlew build` builds both jars.
 
 ---
 
@@ -665,4 +851,9 @@ The tests cover:
 | `/binwatch testwebhook` says `PERMANENT_ERROR HTTP 401/404` | The webhook was deleted or the token is wrong. Copy it again into `secrets.json`, then run `/binwatch reload` |
 | `Discord webhook URL rejected` | It must be `https://discord.com/api/webhooks/<id>/<token>` |
 | Database errors at start | Look in `.minecraft/binwatch/` for a `binwatch.corrupt-*.mv.db`. A fresh database was created automatically |
+| Standalone: "No Discord webhook configured" | Run it in a terminal to be asked, or set `BINWATCH_DISCORD_WEBHOOK_URL`, or run `--setup` |
+| Standalone: "Discord rejected the board message: HTTP 401/403/404" | The webhook was deleted or its channel is gone. Run with `--setup` and paste a new one. It retries every 5 minutes |
+| Standalone: board stays empty | Normal for a while: only new listings that clear the filters and SkyCofl appear, and good ones sell within seconds. Try `--dry-run --verbose`, or lower `filters.minNetProfit` |
+| Standalone: `UnsupportedClassVersionError` | It needs Java 25 (`java -version`) |
+| Standalone: `?` instead of symbols in the console | The console uses ASCII stand-ins for some symbols; Discord shows the real ones. Unusual item-name characters may still show as `?` |
 | Large disk use | Lower `storage.retentionDays` or `storage.maxApiObservationRows`. Pruning runs hourly |

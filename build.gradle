@@ -57,7 +57,31 @@ test {
 jar {
 	def projectName = project.name
 	inputs.property "projectName", projectName
+	// The standalone console app ships in its own jar (standaloneJar below).
+	exclude 'dev/binwatch/standalone/**'
 	from("LICENSE") {
 		rename { "${it}_$projectName" }
 	}
 }
+
+// Standalone console app (no Minecraft): the shared engine without the in-game client package, plus Gson and H2.
+// Build with: ./gradlew standaloneJar  ->  build/libs/binwatch-standalone-<version>.jar
+def standaloneLibs = configurations.runtimeClasspath.filter { it.name.startsWith('gson-') || it.name.startsWith('h2-') }
+def archiveOps = services.get(ArchiveOperations)
+tasks.register('standaloneJar', Jar) {
+	group = 'build'
+	description = 'Builds the standalone AH Flipper console app (runs without Minecraft).'
+	archiveBaseName = 'binwatch-standalone'
+	from(sourceSets.main.output) {
+		exclude 'dev/binwatch/client/**'
+		exclude 'fabric.mod.json'
+	}
+	from(standaloneLibs.elements.map { files -> files.collect { archiveOps.zipTree(it.asFile) } }) {
+		exclude 'META-INF/*.SF', 'META-INF/*.DSA', 'META-INF/*.RSA', 'META-INF/MANIFEST.MF', '**/module-info.class'
+	}
+	duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+	manifest {
+		attributes('Main-Class': 'dev.binwatch.standalone.StandaloneMain', 'Implementation-Version': project.version)
+	}
+}
+tasks.named('assemble') { dependsOn 'standaloneJar' }

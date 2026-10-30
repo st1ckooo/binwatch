@@ -96,11 +96,39 @@ public final class BinWatchService implements AutoCloseable {
 
 	private volatile Consumer<FlipCandidate> autoViewListener = c -> {
 	};
+	private volatile Consumer<FlipCandidate> opportunityListener = c -> {
+	};
+	private volatile Consumer<AuctionCollector.SnapshotSummary> snapshotListener = s -> {
+	};
+	private final AtomicLong evaluationNanos = new AtomicLong();
+	/** Dry run: nothing is sent to Discord (no alerts, summary, bot or log channel), whatever the config says. */
+	private volatile boolean discordOff;
+	private WebhookClient webhook;
 	private volatile long configFileModifiedMs;
 
 	/** Receives the same alerted flips as the chat listener, regardless of chat settings; used by the speed check. */
 	public void setAutoViewListener(Consumer<FlipCandidate> listener) {
 		this.autoViewListener = listener == null ? c -> {
+		} : listener;
+	}
+
+	/**
+	 * Receives every live flip that passed the filters and the market check, before alert rate limits and cooldowns;
+	 * used by the standalone app's board. Called on a collector or market worker thread.
+	 */
+	public void setOpportunityListener(Consumer<FlipCandidate> listener) {
+		this.opportunityListener = listener == null ? c -> {
+		} : listener;
+	}
+
+	/** Call before {@link #init()}: keeps every Discord feature silent for this run. */
+	public void setDiscordOff(boolean off) {
+		this.discordOff = off;
+	}
+
+	/** Receives the summary of every changed snapshot after all its pages were processed. */
+	public void setSnapshotListener(Consumer<AuctionCollector.SnapshotSummary> listener) {
+		this.snapshotListener = listener == null ? s -> {
 		} : listener;
 	}
 
@@ -133,6 +161,11 @@ public final class BinWatchService implements AutoCloseable {
 
 	/** Opens storage and creates all components. API collection starts if {@code api.enabled} is true. */
 	public void init() {
+		init(new JdkHttpTransport(Duration.ofSeconds(config.api.connectTimeoutSeconds)), AuctionApiClient.DEFAULT_BASE);
+	}
+
+	/** {@link #init()} with a given transport and API base (tests use a scripted transport). */
+	public void init(HttpTransport http, java.net.URI apiBase) {
 		BwLog.info("BIN Watch starting (data directory " + dataDir + ")");
 		try {
 			store = ObservationStore.openFile(dataDir);
@@ -145,8 +178,7 @@ public final class BinWatchService implements AutoCloseable {
 			BwLog.error("Persistent storage unavailable; BIN Watch cannot record observations", e);
 			return;
 		}
-		HttpTransport http = new JdkHttpTransport(Duration.ofSeconds(config.api.connectTimeoutSeconds));
-		build(store, http, AuctionApiClient.DEFAULT_BASE);
+		build(store, http, apiBase);
 		maintenance = Executors.newSingleThreadScheduledExecutor(r -> {
 			Thread t = new Thread(r, "BINWatch-maintenance");
 			t.setDaemon(true);
@@ -159,7 +191,7 @@ public final class BinWatchService implements AutoCloseable {
 		dispatcher.start();
 		gateway = new DiscordGateway(bot, () -> secrets.discordBotToken, () -> config.discordBot.slashCommands,
 				this::discordCommand);
-		if (config.discordBot.enabled && secrets.hasBotToken()) {
+		if (config.discordBot.enabled && secrets.hasBotToken() && !discordOff) {
 			gateway.start();
 		}
 		BwLog.setSink(this::toLogChannel);
@@ -185,6 +217,7 @@ public final class BinWatchService implements AutoCloseable {
 		evaluator = new FlipEvaluator(config);
 		bot = new DiscordBot(http, () -> secrets.discordBotToken);
 		WebhookClient discord = new WebhookClient(http, bot);
+		webhook = discord;
 		feed = new DiscordFeed(discord, clock::millis, Duration.ofSeconds(10));
 		dispatcher = new AlertDispatcher(st, discord, clock, Thread::sleep, config, this::alertTarget);
 		dispatcher.setServerClockOffset(() -> {
@@ -215,11 +248,25 @@ public final class BinWatchService implements AutoCloseable {
 				if (summary.status() == dev.binwatch.api.SnapshotStatus.COMPLETE) {
 					topCandidates.keySet().removeIf(u -> !collector.isActive(u));
 				}
+				try {
+					snapshotListener.accept(summary);
+				} catch (RuntimeException e) {
+					BwLog.throttled(BwLog.Level.ERROR, "snapshot-listener", "Snapshot listener failed", e);
+				}
 			}
 		});
 	}
 
 	private void evaluate(List<AuctionCollector.FirstSeen> firstSeen, PriceIndex index, boolean synthetic) {
+		long started = System.nanoTime();
+		try {
+			evaluateAll(firstSeen, index, synthetic);
+		} finally {
+			evaluationNanos.addAndGet(System.nanoTime() - started);
+		}
+	}
+
+	private void evaluateAll(List<AuctionCollector.FirstSeen> firstSeen, PriceIndex index, boolean synthetic) {
 		long now = clock.millis();
 		Valuator v = valuator;
 		FlipEvaluator ev = evaluator;
@@ -281,6 +328,13 @@ public final class BinWatchService implements AutoCloseable {
 				return;
 			}
 		}
+		if (!synthetic) {
+			try {
+				opportunityListener.accept(c);
+			} catch (RuntimeException e) {
+				BwLog.throttled(BwLog.Level.WARN, "opportunity", "Opportunity listener failed: " + e, null);
+			}
+		}
 		AlertDispatcher.OfferResult r = dispatcher.offer(c);
 		BwLog.debug("Alert offer for " + c.auctionUuid() + ": " + r);
 		boolean alerted = !synthetic && (r == AlertDispatcher.OfferResult.QUEUED
@@ -306,18 +360,24 @@ public final class BinWatchService implements AutoCloseable {
 
 	/** Alerts go to the bot's alerts channel when set up, otherwise to the webhook. */
 	private String alertTarget() {
+		if (discordOff) {
+			return null;
+		}
 		String t = channel(config.discordBot.alertsChannelId);
 		return t != null ? t : secrets.discordWebhookUrl;
 	}
 
 	private String summaryTarget() {
+		if (discordOff) {
+			return null;
+		}
 		String t = channel(config.discordBot.summaryChannelId);
 		return t != null ? t : secrets.summaryWebhookUrl();
 	}
 
 	/** {@code channel:<id>} when the bot is enabled, has a token and the channel id is set; otherwise null. */
 	private String channel(String channelId) {
-		return bot != null && config.discordBot.enabled ? bot.target(channelId) : null;
+		return !discordOff && bot != null && config.discordBot.enabled ? bot.target(channelId) : null;
 	}
 
 	private JsonObject tradeMessage(TradeChatParser.Event e, List<String> lines) {
@@ -661,6 +721,38 @@ public final class BinWatchService implements AutoCloseable {
 				+ ".txt"), timingReport(windowMs).toLines()));
 		BwLog.info("CSV export written to " + dataDir.resolve("exports"));
 		return files;
+	}
+
+	/** Listings valued so far (all first-seen BIN auctions) and the CPU time spent valuing and filtering them. */
+	public long candidatesEvaluated() {
+		return candidatesEvaluated.get();
+	}
+
+	public long evaluationNanos() {
+		return evaluationNanos.get();
+	}
+
+	/** Whether the auction was in the newest snapshot (removals are only applied after a COMPLETE one). */
+	public boolean isListed(UUID auctionUuid) {
+		return collector != null && collector.isActive(auctionUuid);
+	}
+
+	/** Null before {@link #init()} succeeded. */
+	public AuctionCollector collector() {
+		return collector;
+	}
+
+	public ObservationStore store() {
+		return store;
+	}
+
+	public WebhookClient webhookClient() {
+		return webhook;
+	}
+
+	/** The alert webhook URL from secrets.json or the environment; never log it. Empty when not set. */
+	public String webhookUrl() {
+		return secrets.hasWebhook() ? secrets.discordWebhookUrl : "";
 	}
 
 	public BinWatchConfig config() {

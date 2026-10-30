@@ -22,6 +22,7 @@ public final class BinWatchConfig {
 	public Market market = new Market();
 	public Summary summary = new Summary();
 	public DiscordBot discordBot = new DiscordBot();
+	public Board board = new Board();
 	public Storage storage = new Storage();
 	public Logging logging = new Logging();
 	public Export export = new Export();
@@ -222,6 +223,22 @@ public final class BinWatchConfig {
 	}
 
 	/**
+	 * Standalone app only: one Discord message titled "AH Flipper" listing the best opportunities that are still
+	 * listed, edited in place as they change. The in-game mod ignores this section.
+	 */
+	public static final class Board {
+		public boolean enabled = true;
+		/** Opportunities shown in the message (the rest stay tracked). */
+		public int maxFlips = 8;
+		/** Only show flips whose net profit is at least this percentage of the buy price; 0 shows all that passed. */
+		public double minProfitPercent = 0;
+		/** Minimum gap between two edits of the message; changes in between are merged into one edit. */
+		public long minEditIntervalMs = 1500;
+		/** Opportunities kept in memory; the least profitable are dropped beyond this. */
+		public int maxTracked = 200;
+	}
+
+	/**
 	 * Discord bot run by the mod (token in secrets.json). Each channel id is optional: leave it empty to use the webhook
 	 * for alerts and the summary, or to skip trades and log messages. Copy ids with Discord's Developer Mode.
 	 */
@@ -270,7 +287,7 @@ public final class BinWatchConfig {
 	public List<String> validate() {
 		List<String> errors = new ArrayList<>();
 		if (api == null || valuation == null || fees == null || filters == null || discord == null
-				|| chat == null || autoView == null || market == null || summary == null || discordBot == null || storage == null || logging == null || export == null) {
+				|| chat == null || autoView == null || market == null || summary == null || discordBot == null || board == null || storage == null || logging == null || export == null) {
 			errors.add("one or more configuration sections are missing");
 			return errors;
 		}
@@ -280,6 +297,10 @@ public final class BinWatchConfig {
 		range(errors, "market.requestTimeoutMs", market.requestTimeoutMs, 500, 30_000);
 		range(errors, "summary.updateSeconds", summary.updateSeconds, 15, 3600);
 		range(errors, "summary.topCount", summary.topCount, 1, 25);
+		range(errors, "board.maxFlips", board.maxFlips, 1, 20);
+		range(errors, "board.minProfitPercent", board.minProfitPercent, 0, 10_000);
+		range(errors, "board.minEditIntervalMs", board.minEditIntervalMs, 1000, 60_000);
+		range(errors, "board.maxTracked", board.maxTracked, 10, 10_000);
 		if (market.minDailySales < 0 || market.maxSellHours <= 0 || market.undercutPercent < 0 || market.undercutPercent > 50) {
 			errors.add("market: minDailySales must be >= 0, maxSellHours > 0 and undercutPercent between 0 and 50");
 		}

@@ -54,11 +54,12 @@ public final class AuctionCollector {
 	 * @param burstProbes  page-0 probes it took to see this snapshot (0 when found by a plain poll)
 	 * @param staleRetries pages re-fetched because they still showed an older snapshot
 	 * @param newListings  first-seen auctions created while the collector was running
+	 * @param page0ReceivedMs local time the snapshot's page 0 was fully received
 	 */
 	public record SnapshotSummary(long pollId, String snapshotId, long lastUpdatedMs, SnapshotStatus status,
 			int totalPages, int pagesFetched, List<Integer> failedPages, int auctionsSeen, int firstSeen,
 			long startedMs, long finishedMs, String note, Long detectLagMs, int burstProbes, int staleRetries,
-			int newListings) {
+			int newListings, long page0ReceivedMs) {
 	}
 
 	public enum PollOutcome {
@@ -599,7 +600,7 @@ public final class AuctionCollector {
 		staleRetriesTotal.addAndGet(staleRetries.get());
 		SnapshotSummary summary = new SnapshotSummary(pollId, snapshotId, p0.lastUpdatedMs(), status, total, fetched,
 				List.copyOf(failed), seenThisPoll.size(), firstSeenCount[0], started, finished, note, detectLag,
-				detection.burstProbes(), staleRetries.get(), newCount.get());
+				detection.burstProbes(), staleRetries.get(), newCount.get(), p0.receivedAtMs());
 		lastSummary = summary;
 		lastSuccessfulPollMs = finished;
 		lastError = status == SnapshotStatus.INCOMPLETE ? note : null;
