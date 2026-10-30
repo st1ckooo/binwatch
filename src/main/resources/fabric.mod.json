@@ -1,0 +1,22 @@
+{
+	"schemaVersion": 1,
+	"id": "binwatch",
+	"version": "${version}",
+	"name": "BIN Watch",
+	"description": "Read-only Hypixel SkyBlock BIN auction monitor: public-API collector, flip estimates and Discord alerts. Never buys, bids or sends packets.",
+	"authors": [
+		"BIN Watch contributors"
+	],
+	"environment": "client",
+	"entrypoints": {
+		"client": [
+			"dev.binwatch.client.BinWatchClient"
+		]
+	},
+	"depends": {
+		"fabricloader": ">=0.19.5",
+		"minecraft": "~26.2",
+		"java": ">=25",
+		"fabric-api": "*"
+	}
+}

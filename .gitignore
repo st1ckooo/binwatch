@@ -1,0 +1,28 @@
+# Gradle / IDE
+.gradle/
+build/
+out/
+classes/
+.idea/
+*.iml
+.vscode/
+bin/
+
+# Minecraft dev runtime
+run/
+
+# BIN Watch secrets and generated data: never commit
+secrets.json
+**/binwatch/secrets.json
+/binwatch/
+*.mv.db
+*.trace.db
+*.csv
+logs/
+
+# Local-only files
+config.json
+*.log
+.env
+.env.*
+.github/modernize/
