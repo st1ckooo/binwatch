@@ -23,6 +23,7 @@ public final class BinWatchConfig {
 	public Summary summary = new Summary();
 	public DiscordBot discordBot = new DiscordBot();
 	public Board board = new Board();
+	public Profit profit = new Profit();
 	public Storage storage = new Storage();
 	public Logging logging = new Logging();
 	public Export export = new Export();
@@ -239,6 +240,23 @@ public final class BinWatchConfig {
 	}
 
 	/**
+	 * Standalone app only: tracks whether each flip shown on the board was still unsold when Discord received it, using
+	 * the sale times from {@code auctions_ended}, and reports the profit that could have been made to its own webhook
+	 * ({@code discordProfitWebhookUrl} in secrets.json).
+	 */
+	public static final class Profit {
+		public boolean enabled = true;
+		/** Also post one short message per flip once its result is known (the summary is always kept). */
+		public boolean postEachResult = true;
+		/** A flip still listed this long after its alert is counted as buyable and no longer followed. */
+		public int maxFollowMinutes = 60;
+		/** Best buyable flips of the last 24 h listed in the summary. */
+		public int topCount = 5;
+		/** Results kept for the 24 h figures and the list; older ones only stay in the all-time totals. */
+		public int keepDays = 30;
+	}
+
+	/**
 	 * Discord bot run by the mod (token in secrets.json). Each channel id is optional: leave it empty to use the webhook
 	 * for alerts and the summary, or to skip trades and log messages. Copy ids with Discord's Developer Mode.
 	 */
@@ -287,7 +305,7 @@ public final class BinWatchConfig {
 	public List<String> validate() {
 		List<String> errors = new ArrayList<>();
 		if (api == null || valuation == null || fees == null || filters == null || discord == null
-				|| chat == null || autoView == null || market == null || summary == null || discordBot == null || board == null || storage == null || logging == null || export == null) {
+				|| chat == null || autoView == null || market == null || summary == null || discordBot == null || board == null || profit == null || storage == null || logging == null || export == null) {
 			errors.add("one or more configuration sections are missing");
 			return errors;
 		}
@@ -301,6 +319,9 @@ public final class BinWatchConfig {
 		range(errors, "board.minProfitPercent", board.minProfitPercent, 0, 10_000);
 		range(errors, "board.minEditIntervalMs", board.minEditIntervalMs, 1000, 60_000);
 		range(errors, "board.maxTracked", board.maxTracked, 10, 10_000);
+		range(errors, "profit.maxFollowMinutes", profit.maxFollowMinutes, 5, 1440);
+		range(errors, "profit.topCount", profit.topCount, 0, 15);
+		range(errors, "profit.keepDays", profit.keepDays, 1, 365);
 		if (market.minDailySales < 0 || market.maxSellHours <= 0 || market.undercutPercent < 0 || market.undercutPercent > 50) {
 			errors.add("market: minDailySales must be >= 0, maxSellHours > 0 and undercutPercent between 0 and 50");
 		}

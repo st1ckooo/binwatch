@@ -16,11 +16,17 @@ public final class Secrets {
 	public String discordWebhookUrl = "";
 	/** Optional separate webhook (e.g. its own channel) for the live profit summary; empty uses the alert webhook. */
 	public String discordSummaryWebhookUrl = "";
+	/** Standalone app: webhook for the profit tracker (flips that were still buyable when alerted). Optional. */
+	public String discordProfitWebhookUrl = "";
 	/** Discord bot token (Developer Portal → your application → Bot → Reset Token). Optional; never logged. */
 	public String discordBotToken = "";
 
 	public boolean hasWebhook() {
 		return discordWebhookUrl != null && !discordWebhookUrl.isBlank();
+	}
+
+	public boolean hasProfitWebhook() {
+		return discordProfitWebhookUrl != null && !discordProfitWebhookUrl.isBlank();
 	}
 
 	public boolean hasBotToken() {
@@ -72,6 +78,7 @@ public final class Secrets {
 	public String toString() {
 		return "Secrets{discordWebhookUrl=" + (hasWebhook() ? "<set>" : "<empty>") + ", discordSummaryWebhookUrl="
 				+ (discordSummaryWebhookUrl != null && !discordSummaryWebhookUrl.isBlank() ? "<set>" : "<empty>")
+				+ ", discordProfitWebhookUrl=" + (hasProfitWebhook() ? "<set>" : "<empty>")
 				+ ", discordBotToken=" + (hasBotToken() ? "<set>" : "<empty>") + "}";
 	}
 }

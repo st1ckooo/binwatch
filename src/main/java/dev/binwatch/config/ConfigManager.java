@@ -97,6 +97,14 @@ public final class ConfigManager {
 				BwLog.warn("Discord summary webhook URL rejected: " + problem + "; using the alert webhook");
 			}
 		}
+		secrets.discordProfitWebhookUrl = secrets.discordProfitWebhookUrl == null ? "" : secrets.discordProfitWebhookUrl.trim();
+		if (!secrets.discordProfitWebhookUrl.isEmpty()) {
+			String problem = Secrets.validateWebhookUrl(secrets.discordProfitWebhookUrl);
+			if (problem != null) {
+				secrets.discordProfitWebhookUrl = "";
+				BwLog.warn("Discord profit webhook URL rejected: " + problem);
+			}
+		}
 		secrets.discordBotToken = secrets.discordBotToken == null ? "" : secrets.discordBotToken.trim();
 		if (secrets.discordBotToken.regionMatches(true, 0, "Bot ", 0, 4)) {
 			secrets.discordBotToken = secrets.discordBotToken.substring(4).trim();

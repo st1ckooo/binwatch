@@ -158,6 +158,13 @@
     "minEditIntervalMs": 1500,
     "maxTracked": 200
   },
+  "profit": {
+    "enabled": true,
+    "postEachResult": true,
+    "maxFollowMinutes": 60,
+    "topCount": 5,
+    "keepDays": 30
+  },
   "storage": {
     "retentionDays": 3,
     "maxApiObservationRows": 1000000,

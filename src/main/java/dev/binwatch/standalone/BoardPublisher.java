@@ -53,6 +53,11 @@ final class BoardPublisher implements AutoCloseable {
 	private final ConsoleOut console;
 	private final boolean dryRun;
 	private final LongSupplier wallMs;
+	private final String label;
+	/** "board" or e.g. "profit summary", for messages and throttle keys. */
+	private final String what;
+	private volatile java.util.function.LongConsumer onDelivered = t -> {
+	};
 	private final ScheduledExecutorService worker;
 
 	// Guarded by this.
@@ -73,6 +78,14 @@ final class BoardPublisher implements AutoCloseable {
 
 	BoardPublisher(Supplier<Sender> sender, MessageIds ids, Supplier<JsonObject> view, LongSupplier minGapMs,
 			Duration timeout, Metrics metrics, ConsoleOut console, boolean dryRun, LongSupplier wallMs) {
+		this("Embed", sender, ids, view, minGapMs, timeout, metrics, console, dryRun, wallMs);
+	}
+
+	/** @param label names the message in console lines, e.g. "Embed" or "Profit summary" */
+	BoardPublisher(String label, Supplier<Sender> sender, MessageIds ids, Supplier<JsonObject> view, LongSupplier minGapMs,
+			Duration timeout, Metrics metrics, ConsoleOut console, boolean dryRun, LongSupplier wallMs) {
+		this.label = label;
+		this.what = "Embed".equals(label) ? "board" : label.toLowerCase(java.util.Locale.ROOT);
 		this.sender = sender;
 		this.ids = ids;
 		this.view = view;
@@ -83,10 +96,19 @@ final class BoardPublisher implements AutoCloseable {
 		this.dryRun = dryRun;
 		this.wallMs = wallMs;
 		this.worker = Executors.newSingleThreadScheduledExecutor(r -> {
-			Thread t = new Thread(r, "BINWatch-board");
+			Thread t = new Thread(r, "BINWatch-" + label.toLowerCase(java.util.Locale.ROOT).replace(' ', '-'));
 			t.setDaemon(true);
 			return t;
 		});
+	}
+
+	/**
+	 * Called on the worker thread with the wall time Discord confirmed a changed message (or, in a dry run, the time it
+	 * was rendered). The payload is the one most recently produced by the view.
+	 */
+	void setOnDelivered(java.util.function.LongConsumer c) {
+		onDelivered = c == null ? t -> {
+		} : c;
 	}
 
 	String lastResult() {
@@ -190,8 +212,9 @@ final class BoardPublisher implements AutoCloseable {
 			metrics.dryRunRenders.incrementAndGet();
 			int fields = payload.getAsJsonArray("embeds").get(0).getAsJsonObject().getAsJsonArray("fields").size();
 			lastResult = "dry run: embed rendered (" + fields + " flips), not sent";
-			console.line("DISCORD", "Dry run: embed rendered with " + fields + " flip(s) in "
-					+ metrics.embedBuildMicros.last() + " µs (not sent)");
+			console.line("DISCORD", "Dry run: " + label.toLowerCase(java.util.Locale.ROOT) + " rendered with " + fields
+					+ " field(s) in " + metrics.embedBuildMicros.last() + " µs (not sent)");
+			onDelivered.accept(wallMs.getAsLong());
 			return;
 		}
 		Sender s = sender.get();
@@ -210,7 +233,7 @@ final class BoardPublisher implements AutoCloseable {
 			if (messageId != null) {
 				res = s.edit(messageId, payload, timeout);
 				if (res.status() == 404 && discordCode(res.body()) == 10008) {
-					console.line("DISCORD", "The board message was deleted in Discord; posting a new one");
+					console.line("DISCORD", "The " + what + " message was deleted in Discord; posting a new one");
 					messageId = null;
 				}
 			} else {
@@ -249,9 +272,10 @@ final class BoardPublisher implements AutoCloseable {
 					e2e = " (" + ms + " ms after the page with the change was received)";
 				}
 				lastResult = (created ? "posted" : "updated") + " in " + reqMs + " ms";
-				console.line("DISCORD", "Embed " + (created ? "posted as a new message" : "updated") + " in " + reqMs + " ms"
+				onDelivered.accept(wallMs.getAsLong());
+				console.line("DISCORD", label + " " + (created ? "posted as a new message" : "updated") + " in " + reqMs + " ms"
 						+ e2e);
-				BwLog.resetThrottle("board-http");
+				BwLog.resetThrottle(what + "-http");
 				return;
 			}
 			metrics.discordErrors.incrementAndGet();
@@ -259,37 +283,37 @@ final class BoardPublisher implements AutoCloseable {
 				metrics.discordRateLimits.incrementAndGet();
 				long wait = retryAfterMs(res);
 				lastResult = "rate limited by Discord, waiting " + wait + " ms";
-				BwLog.warn("Discord rate limit on the board message; next try in " + wait + " ms");
+				BwLog.warn("Discord rate limit on the " + what + " message; next try in " + wait + " ms");
 				retryLater(changeWallMs, wait);
 				return;
 			}
 			String why = "HTTP " + st + discordMessage(res.body());
 			if (st == 401 || st == 403 || st == 404) {
 				lastResult = "webhook rejected (" + why + ")";
-				BwLog.throttled(BwLog.Level.ERROR, "board-http", "Discord rejected the board message: " + why
+				BwLog.throttled(BwLog.Level.ERROR, what + "-http", "Discord rejected the " + what + " message: " + why
 						+ ". Check the webhook (run with --setup to enter a new one); retrying in 5 minutes", null);
 				retryLater(changeWallMs, REJECTED_RETRY_MS);
 				return;
 			}
 			lastResult = "Discord error " + why;
-			BwLog.throttled(BwLog.Level.WARN, "board-http", "Board message not published: " + why, null);
+			BwLog.throttled(BwLog.Level.WARN, what + "-http", "The " + what + " message was not published: " + why, null);
 			retryLater(changeWallMs, nextBackoff());
 		} catch (HttpTimeoutException e) {
 			metrics.discordErrors.incrementAndGet();
 			lastResult = "Discord request timed out";
-			BwLog.throttled(BwLog.Level.WARN, "board-io", "Board message not published: request timed out", null);
+			BwLog.throttled(BwLog.Level.WARN, what + "-io", "The " + what + " message was not published: request timed out", null);
 			retryLater(changeWallMs, nextBackoff());
 		} catch (IOException e) {
 			metrics.discordErrors.incrementAndGet();
 			lastResult = "network error: " + e.getClass().getSimpleName();
-			BwLog.throttled(BwLog.Level.WARN, "board-io", "Board message not published: network error "
+			BwLog.throttled(BwLog.Level.WARN, what + "-io", "The " + what + " message was not published: network error "
 					+ e.getClass().getSimpleName(), null);
 			retryLater(changeWallMs, nextBackoff());
 		} catch (InterruptedException e) {
 			Thread.currentThread().interrupt();
 		} catch (IllegalArgumentException e) {
 			lastResult = "webhook URL is invalid";
-			BwLog.throttled(BwLog.Level.ERROR, "board-url", "The webhook URL is invalid; run with --setup", null);
+			BwLog.throttled(BwLog.Level.ERROR, what + "-url", "The webhook URL is invalid; run with --setup", null);
 		}
 	}
 

@@ -452,6 +452,11 @@ class StandaloneTest {
 
 	/** Scripted Hypixel + Discord. Page 0 serves {@code snapshots} in turn; the newest stays after the last. */
 	static ScriptedTransport hypixel(List<List<SyntheticData.Auction>> snapshots, List<Long> lastUpdated, int pageSize) {
+		return hypixel(snapshots, lastUpdated, pageSize, () -> SyntheticData.endedJson(NOW, List.of(), NOW));
+	}
+
+	static ScriptedTransport hypixel(List<List<SyntheticData.Auction>> snapshots, List<Long> lastUpdated, int pageSize,
+			java.util.function.Supplier<String> ended) {
 		// Page bodies are built up front so a benchmark measures the app, not the fake server.
 		List<List<String>> bodies = new ArrayList<>();
 		for (int s = 0; s < snapshots.size(); s++) {
@@ -472,7 +477,7 @@ class StandaloneTest {
 			int snap = page == 0 ? Math.min(current.incrementAndGet(), snapshots.size() - 1) : Math.max(0, current.get());
 			return ScriptedTransport.ok(bodies.get(snap).get(page));
 		});
-		t.whenEmpty("auctions_ended", u -> ScriptedTransport.ok(SyntheticData.endedJson(NOW, List.of(), NOW)));
+		t.whenEmpty("auctions_ended", u -> ScriptedTransport.ok(ended.get()));
 		t.whenEmpty("?wait=true", u -> ScriptedTransport.ok("{\"id\":\"111\"}"));
 		t.whenEmpty("/messages/", u -> ScriptedTransport.ok("{\"id\":\"111\"}"));
 		return t;

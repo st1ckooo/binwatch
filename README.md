@@ -664,8 +664,11 @@ Stop it with **Ctrl+C**. The Discord message then switches to "Stopped", so nobo
 1. It creates `binwatch-data/config/config.json` with standalone defaults. The format is the same as the mod's; see `config.standalone.example.json`.
 2. It asks for the Discord webhook URL, with the input hidden. It checks the webhook with Discord using a `GET` of the webhook, which posts nothing, and shows you the webhook's name.
 3. It saves the webhook to `binwatch-data/config/secrets.json`, readable only by your user (an owner-only ACL on Windows, `chmod 600` elsewhere). The `BINWATCH_DISCORD_WEBHOOK_URL` environment variable overrides it.
-4. It asks for the minimum profit, the minimum discount and how many flips to show. Press Enter to keep each default.
-5. It starts scanning.
+4. It asks for an optional second webhook for the [profit tracker](#profit-tracker). Use a different channel. Press Enter to skip it.
+5. It asks for the minimum profit, the minimum discount and how many flips to show. Press Enter to keep each default.
+6. It starts scanning.
+
+`--setup` asks the same questions again. Pressing Enter at a webhook question keeps the current one.
 
 The webhook URL is never printed or logged. Without a terminal (for example when run as a service), set the environment variable or the secrets file first. Otherwise it stops with a clear message.
 
@@ -685,6 +688,11 @@ All of the mod's settings apply: `filters.*`, `fees.*`, `valuation.*`, `market.*
 | `board.minEditIntervalMs` | 1500 | Minimum gap between edits. Changes in between become one edit |
 | `board.maxTracked` | 200 | Opportunities kept in memory |
 | `discord.enabled` | false | Also send the mod's one-message-per-flip alerts to the same webhook |
+| `profit.enabled` | true | Run the [profit tracker](#profit-tracker) |
+| `profit.postEachResult` | true | Post one short message per flip result, as well as the summary |
+| `profit.maxFollowMinutes` | 60 | A flip still listed this long after its alert counts as buyable, and is no longer followed |
+| `profit.topCount` | 5 | Best buyable flips of the last 24 h listed in the summary |
+| `profit.keepDays` | 30 | How long results are kept for the list (the all-time totals are kept forever) |
 | `logging.level` | INFO | Detail of `binwatch-data/logs/binwatch.log` |
 
 ### The Discord message
@@ -722,6 +730,36 @@ A flip joins the board when it passes the same filters and market check that mak
 A partial snapshot cannot prove an auction is gone, so it removes nothing. The same auction is never listed twice.
 
 Auctions that already existed when the app started are not opportunities (the mod's `alertOnPreexisting` rule), so a restart never floods the board. The board is saved to `binwatch-data/data/board.json`. After a restart, saved entries are shown as "not re-checked yet" until the first complete snapshot confirms or removes them.
+
+### Profit tracker
+
+The profit tracker answers one question: when the alert reached Discord, could you still have bought the flip? It gives the profit you could have made, and shows how long each flip stayed buyable.
+
+- It follows every flip shown in the board message, from the moment Discord confirmed that message.
+- Hypixel's `auctions_ended` lists every sale with its exact time, about a minute after it happens. The app already downloads it once a minute.
+
+How each flip is decided:
+
+| Result | When | Counted as profit you could have made? |
+|---|---|---|
+| ✅ Could have bought | It sold after the alert reached Discord ("sold 14.2 s after the alert") | Yes |
+| ✅ Could have bought | It was still unsold `profit.maxFollowMinutes` after the alert | Yes |
+| ✅ Could have bought | It disappeared with no recorded sale (probably cancelled), but a snapshot taken after the alert still listed it | Yes |
+| ❌ Sniped | It sold before the alert reached Discord ("sold 1.3 s before the alert reached Discord") | No |
+| ❔ No result | It disappeared with no recorded sale, and was never seen listed after the alert | No |
+
+- The alert time is converted to Hypixel's clock with the collector's measured offset, so it can be compared with Hypixel's sale times.
+- A result is known one to two minutes after the alert, because that's when Hypixel publishes the sale. A flip that vanishes from the auctions is given 3 more minutes for its sale to appear.
+- The profit is the estimated profit after fees shown in the alert: what you could have made, not money you made.
+
+What goes to the profit webhook (`discordProfitWebhookUrl` in `secrets.json`):
+- **One summary message**, edited in place like the board:
+  - potential profit for the last hour, the last 24 h and all time, with the counts of buyable, sniped and unknown flips
+  - how fast the buyable flips sold (median and fastest time after the alert, and how many sold within 5 s and 30 s)
+  - the best flips you could have bought in the last 24 h
+- **One short message per flip** once its result is known, with the item, the profit, `/viewauction`, and how long after the alert it sold. Turn these off with `profit.postEachResult`.
+
+Without a profit webhook, the results are printed in the console (`[PROFIT] …`). The state is saved to `binwatch-data/data/profit.json`, so a restart keeps following the flips that are still pending, and keeps the all-time totals.
 
 ### Console output and timings
 
@@ -792,7 +830,7 @@ The JAR is written to `build/libs/binwatch-1.0.0.jar`. The `-sources.jar` next t
 ./gradlew test
 ```
 
-Runs 96 offline tests. They use fake HTTP transports, in-memory or temporary databases, and a controllable clock.
+Runs 104 offline tests. They use fake HTTP transports, in-memory or temporary databases, and a controllable clock.
 
 ```bash
 ./gradlew test --tests dev.binwatch.LiveApiTest -Dbinwatch.liveTest=true
@@ -830,7 +868,8 @@ The tests cover:
 - the profit summary, posted once and then edited in place (and re-posted if deleted),
 - the auction-screen profit banner text and `/viewauction` matching,
 - the Discord bot: channel routing with the bot token, summary editing in a bot channel, the background feed, token validation and redaction,
-- the standalone app: board add, change and remove, dedupe, ranking, the % and size caps; removal only on complete snapshots; restart recovery; embed limits, empty state and coin format; post once then edit, unchanged skips, re-posting a deleted message, 429 waits, back-off on a rejected webhook; 200 changes during a slow Discord request becoming one edit without blocking the scan; dry run never calling Discord; first-run webhook check (GET only, never echoed); invalid config and missing webhook; the whole pipeline from scripted Hypixel pages to Discord, including a restart that edits the same message; and a 20,000-listing snapshot processing benchmark.
+- the standalone app: board add, change and remove, dedupe, ranking, the % and size caps; removal only on complete snapshots; restart recovery; embed limits, empty state and coin format; post once then edit, unchanged skips, re-posting a deleted message, 429 waits, back-off on a rejected webhook; 200 changes during a slow Discord request becoming one edit without blocking the scan; dry run never calling Discord; first-run webhook check (GET only, never echoed); invalid config and missing webhook; the whole pipeline from scripted Hypixel pages to Discord, including a restart that edits the same message; and a 20,000-listing snapshot processing benchmark,
+- the profit tracker: buyable with its seconds after the alert, sniped before the alert, a sale seen before the alert was confirmed, vanished auctions after the grace period, still listed past the follow time, one follow per auction, state across a restart, and the whole path from an `auctions_ended` sale to the profit webhook.
 
 ```bash
 ./gradlew standaloneJar
@@ -854,6 +893,7 @@ Builds the standalone app (see [Standalone app](#standalone-app-no-minecraft)). 
 | Standalone: "No Discord webhook configured" | Run it in a terminal to be asked, or set `BINWATCH_DISCORD_WEBHOOK_URL`, or run `--setup` |
 | Standalone: "Discord rejected the board message: HTTP 401/403/404" | The webhook was deleted or its channel is gone. Run with `--setup` and paste a new one. It retries every 5 minutes |
 | Standalone: board stays empty | Normal for a while: only new listings that clear the filters and SkyCofl appear, and good ones sell within seconds. Try `--dry-run --verbose`, or lower `filters.minNetProfit` |
+| Standalone: the profit tracker shows nothing | Results take 1–2 minutes after an alert. Check that `[PROFIT] Profit tracker on: results go to the profit webhook` is printed at start-up; if it isn't, add the webhook with `--setup` |
 | Standalone: `UnsupportedClassVersionError` | It needs Java 25 (`java -version`) |
 | Standalone: `?` instead of symbols in the console | The console uses ASCII stand-ins for some symbols; Discord shows the real ones. Unusual item-name characters may still show as `?` |
 | Large disk use | Lower `storage.retentionDays` or `storage.maxApiObservationRows`. Pruning runs hourly |

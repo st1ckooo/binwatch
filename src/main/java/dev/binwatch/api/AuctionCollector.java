@@ -43,6 +43,10 @@ public final class AuctionCollector {
 
 		/** Called after each poll that retrieved a changed snapshot. */
 		void onSnapshot(SnapshotSummary summary);
+
+		/** BIN auctions from {@code auctions_ended} seen for the first time (each sale once), before onSnapshot. */
+		default void onEnded(List<EndedAuction> sold) {
+		}
 	}
 
 	public record FirstSeen(ApiAuction auction, NormalizedItem item, ApiObservation row) {
@@ -764,10 +768,12 @@ public final class AuctionCollector {
 			return;
 		}
 		List<Records.Sale> rows = new ArrayList<>();
+		List<EndedAuction> fresh = new ArrayList<>();
 		for (EndedAuction e : ended.auctions()) {
 			if (!e.bin() || !seenEndedIds.add(e.auctionId())) {
 				continue;
 			}
+			fresh.add(e);
 			try {
 				ItemNormalizer.ItemBytes ib = ItemNormalizer.firstItem(Nbt.decodeBase64Gzip(e.itemBytes()));
 				if (ib == null) {
@@ -790,6 +796,11 @@ public final class AuctionCollector {
 		}
 		if (seenEndedIds.size() > 50_000) {
 			seenEndedIds.clear();
+		}
+		try {
+			listener.onEnded(fresh);
+		} catch (RuntimeException ex) {
+			BwLog.throttled(BwLog.Level.ERROR, "listener-ended", "Ended-auction listener failed", ex);
 		}
 		try {
 			int n = store.insertSales(rows);

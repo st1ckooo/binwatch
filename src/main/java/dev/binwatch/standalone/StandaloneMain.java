@@ -88,6 +88,12 @@ public final class StandaloneMain {
 	private BoardPublisher publisher;
 	private Path boardFile;
 	private java.util.concurrent.ScheduledExecutorService health;
+	private ProfitTracker profit;
+	private BoardPublisher profitPublisher;
+	private dev.binwatch.discord.DiscordFeed profitFeed;
+	private Path profitFile;
+	/** The flips in the board message most recently rendered (worker thread), for the profit tracker. */
+	private volatile java.util.List<FlipBoard.Entry> lastShown = java.util.List.of();
 	private volatile AuctionCollector.SnapshotSummary lastSnapshot;
 	private long lastEvalNanos;
 	private long lastEvaluated;
@@ -181,6 +187,9 @@ public final class StandaloneMain {
 				}
 			}
 			if ((firstRun || opt.setup()) && (input != null || terminal())) {
+				if (!opt.dryRun() && cfg.profit.enabled) {
+					setup.askProfitWebhook();
+				}
 				setup.askThresholds(cfg);
 			}
 		} catch (IOException e) {
@@ -210,12 +219,25 @@ public final class StandaloneMain {
 		} catch (IOException e) {
 			console.line("WARN", "Previous board state ignored: " + e.getMessage());
 		}
-		publisher = new BoardPublisher(this::sender, messageIds(), this::render,
-				() -> service.config().board.minEditIntervalMs,
+		profit = new ProfitTracker(() -> service.config().profit);
+		profitFile = dataDir.resolve("profit.json");
+		try {
+			profit.restore(profitFile);
+		} catch (IOException e) {
+			console.line("WARN", "Previous profit tracker state ignored: " + e.getMessage());
+		}
+		profitPublisher = new BoardPublisher("Profit summary", () -> sender(service.profitWebhookUrl()),
+				messageIds("profit", service::profitWebhookUrl), this::renderProfit, () -> 10_000,
+				Duration.ofSeconds(service.config().discord.requestTimeoutSeconds), new Metrics(), console, opt.dryRun(),
+				System::currentTimeMillis);
+		publisher = new BoardPublisher("Embed", () -> sender(service.webhookUrl()), messageIds("board", service::webhookUrl),
+				this::render, () -> service.config().board.minEditIntervalMs,
 				Duration.ofSeconds(service.config().discord.requestTimeoutSeconds), metrics, console, opt.dryRun(),
 				System::currentTimeMillis);
 		service.setOpportunityListener(this::onOpportunity);
 		service.setSnapshotListener(this::onSnapshot);
+		service.setEndedListener(this::onSold);
+		publisher.setOnDelivered(this::onBoardDelivered);
 
 		console.line("API", "Connecting to the official Hypixel API (" + AuctionApiClient.DEFAULT_BASE
 				+ "/v2/skyblock/auctions, public, no API key needed)...");
@@ -229,11 +251,21 @@ public final class StandaloneMain {
 			service.close();
 			return 1;
 		}
+		if (!opt.dryRun()) {
+			profitFeed = new dev.binwatch.discord.DiscordFeed(service.webhookClient(), System::currentTimeMillis,
+					Duration.ofSeconds(service.config().discord.requestTimeoutSeconds));
+		}
+		if (service.config().profit.enabled) {
+			console.line("PROFIT", "Profit tracker on: " + (service.profitWebhookUrl().isEmpty()
+					? "no profit webhook set, so results are only shown here (add one with --setup)"
+					: "results go to the profit webhook") + ".");
+		}
 		if (!service.config().api.enabled) {
 			console.line("WARN", "api.enabled is false in config.json, so no auctions are fetched.");
 		}
 		console.line("SCAN", "Waiting for the next snapshot (Hypixel publishes one about every 60 s)...");
 		requestBoard(0);
+		requestProfit();
 		// Re-render once a minute so a stalled data source shows as a problem; unchanged content sends nothing.
 		health = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
 			Thread t = new Thread(r, "BINWatch-health");
@@ -263,7 +295,17 @@ public final class StandaloneMain {
 				}
 				publisher.close();
 			}
+			if (profitPublisher != null) {
+				if (service.config().profit.enabled) {
+					profitPublisher.publishNow(Duration.ofSeconds(5));
+				}
+				profitPublisher.close();
+			}
+			if (profitFeed != null) {
+				profitFeed.shutdown();
+			}
 			saveBoard();
+			saveProfit();
 			if (service != null) {
 				service.close();
 			}
@@ -356,8 +398,57 @@ public final class StandaloneMain {
 				+ (col == null ? 0 : col.client().failedRequests.get()) + " | API retries "
 				+ (col == null ? 0 : col.client().retries.get()) + " | Rate limits "
 				+ ((col == null ? 0 : col.client().rateLimitedResponses.get()) + metrics.discordRateLimits.get()));
+		handleProfit(profit.onSnapshot(s.lastUpdatedMs(), s.status() == SnapshotStatus.COMPLETE, service::isListed, now));
 		saveBoard();
+		saveProfit();
 		requestBoard(0);
+		requestProfit();
+	}
+
+	/** Discord confirmed a board message: its flips were sent at this moment. */
+	private void onBoardDelivered(long ackMs) {
+		if (stopping.get() || !service.config().profit.enabled) {
+			return;
+		}
+		handleProfit(profit.onAlerted(lastShown, ackMs, toServerTime(ackMs)));
+		requestProfit();
+	}
+
+	private void onSold(java.util.List<dev.binwatch.api.EndedAuction> sold) {
+		if (stopping.get() || !service.config().profit.enabled) {
+			return;
+		}
+		handleProfit(profit.onSold(sold, System.currentTimeMillis()));
+	}
+
+	private void handleProfit(java.util.List<ProfitTracker.Flip> resolved) {
+		BinWatchConfig cfg = service.config();
+		String url = service.profitWebhookUrl();
+		for (ProfitTracker.Flip f : resolved) {
+			console.line("PROFIT", switch (f.status()) {
+				case BUYABLE -> "Could have bought";
+				case SNIPED -> "Sniped";
+				default -> "No result";
+			} + ": " + f.name() + " | profit " + BoardEmbed.coins(f.netProfit()) + " | " + f.note());
+			if (profitFeed != null && cfg.profit.postEachResult && !url.isEmpty()) {
+				profitFeed.post(url, ProfitEmbed.result(f));
+			}
+		}
+		if (!resolved.isEmpty()) {
+			requestProfit();
+		}
+	}
+
+	private void requestProfit() {
+		if (profitPublisher != null && service.config().profit.enabled) {
+			profitPublisher.request(0);
+		}
+	}
+
+	/** Local time on Hypixel's clock, using the collector's offset estimate when it has one. */
+	private long toServerTime(long localMs) {
+		AuctionCollector col = service.collector();
+		return col != null && col.snapshotClock().hasOffset() ? col.snapshotClock().toServer(localMs) : localMs;
 	}
 
 	private void requestBoard(long changeWallMs) {
@@ -390,13 +481,23 @@ public final class StandaloneMain {
 			state = BoardEmbed.State.DEGRADED;
 			problem = "last API request failed";
 		}
-		return BoardEmbed.payload(board.ranked(), cfg.board.maxFlips, new BoardEmbed.Status(state,
+		java.util.List<FlipBoard.Entry> ranked = board.ranked();
+		JsonObject payload = BoardEmbed.payload(ranked, cfg.board.maxFlips, new BoardEmbed.Status(state,
 				s == null ? null : s.lastUpdatedMs(), s == null ? null : s.status().name(), problem, now,
 				cfg.market.enabled ? "Prices provided by SkyCofl (sky.coflnet.com)" : null));
+		int shown = payload.getAsJsonArray("embeds").get(0).getAsJsonObject().getAsJsonArray("fields").size();
+		lastShown = java.util.List.copyOf(ranked.subList(0, Math.min(shown, ranked.size())));
+		return payload;
 	}
 
-	private BoardPublisher.Sender sender() {
-		String url = service.webhookUrl();
+	private JsonObject renderProfit() {
+		BinWatchConfig cfg = service.config();
+		long now = System.currentTimeMillis();
+		return ProfitEmbed.summary(profit.stats(now, cfg.profit.topCount), now, stopping.get(),
+				cfg.market.enabled ? "Prices provided by SkyCofl (sky.coflnet.com)" : null);
+	}
+
+	private BoardPublisher.Sender sender(String url) {
 		WebhookClient wc = service.webhookClient();
 		if (url.isEmpty() || wc == null) {
 			return null;
@@ -416,19 +517,19 @@ public final class StandaloneMain {
 	}
 
 	/** The message id lives in the database next to a hash of the webhook it belongs to. */
-	private BoardPublisher.MessageIds messageIds() {
+	private BoardPublisher.MessageIds messageIds(String key, java.util.function.Supplier<String> webhook) {
 		return new BoardPublisher.MessageIds() {
 			@Override
 			public String load() {
 				ObservationStore st = service.store();
-				String url = service.webhookUrl();
+				String url = webhook.get();
 				if (st == null || url.isEmpty()) {
 					return null;
 				}
 				try {
-					return SummaryPublisher.hookHash(url).equals(st.getMeta("board_webhook_hash")) ? st.getMeta("board_message_id") : null;
+					return SummaryPublisher.hookHash(url).equals(st.getMeta(key + "_webhook_hash")) ? st.getMeta(key + "_message_id") : null;
 				} catch (java.sql.SQLException e) {
-					BwLog.error("Could not read the board message id", e);
+					BwLog.error("Could not read the " + key + " message id", e);
 					return null;
 				}
 			}
@@ -440,10 +541,10 @@ public final class StandaloneMain {
 					return;
 				}
 				try {
-					st.setMeta("board_message_id", id);
-					st.setMeta("board_webhook_hash", SummaryPublisher.hookHash(service.webhookUrl()));
+					st.setMeta(key + "_message_id", id);
+					st.setMeta(key + "_webhook_hash", SummaryPublisher.hookHash(webhook.get()));
 				} catch (java.sql.SQLException e) {
-					BwLog.error("Could not store the board message id; a restart will post a new message", e);
+					BwLog.error("Could not store the " + key + " message id; a restart will post a new message", e);
 				}
 			}
 		};
@@ -457,6 +558,21 @@ public final class StandaloneMain {
 
 	FlipBoard boardForTest() {
 		return board;
+	}
+
+	ProfitTracker profitForTest() {
+		return profit;
+	}
+
+	private void saveProfit() {
+		if (profit == null || profitFile == null || opt.dryRun()) {
+			return;
+		}
+		try {
+			profit.save(profitFile);
+		} catch (IOException e) {
+			BwLog.throttled(BwLog.Level.WARN, "profit-save", "Could not save the profit tracker: " + e.getMessage(), null);
+		}
 	}
 
 	private void saveBoard() {
@@ -486,6 +602,12 @@ public final class StandaloneMain {
 		console.line("METRICS", "Embed build: " + metrics.embedBuildMicros.describe("µs"));
 		console.line("METRICS", "Discord request: " + metrics.discordRequestMs.describe("ms"));
 		console.line("METRICS", "Page received → Discord confirmed the edit: " + metrics.detectionToDiscordMs.describe("ms"));
+		if (profit != null) {
+			ProfitTracker.Stats st = profit.stats(System.currentTimeMillis(), 0);
+			console.line("PROFIT", "All time: " + st.allTime().buyable() + " buyable (+" + BoardEmbed.coins(st.allTime().profit())
+					+ " potential), " + st.allTime().sniped() + " sniped, " + st.allTime().unknown() + " unknown, "
+					+ st.pending() + " still waiting for a result");
+		}
 	}
 
 	private static boolean terminal() {

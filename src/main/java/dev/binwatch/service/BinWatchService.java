@@ -100,6 +100,8 @@ public final class BinWatchService implements AutoCloseable {
 	};
 	private volatile Consumer<AuctionCollector.SnapshotSummary> snapshotListener = s -> {
 	};
+	private volatile Consumer<List<dev.binwatch.api.EndedAuction>> endedListener = e -> {
+	};
 	private final AtomicLong evaluationNanos = new AtomicLong();
 	/** Dry run: nothing is sent to Discord (no alerts, summary, bot or log channel), whatever the config says. */
 	private volatile boolean discordOff;
@@ -118,6 +120,12 @@ public final class BinWatchService implements AutoCloseable {
 	 */
 	public void setOpportunityListener(Consumer<FlipCandidate> listener) {
 		this.opportunityListener = listener == null ? c -> {
+		} : listener;
+	}
+
+	/** Receives each BIN sale from {@code auctions_ended} once (auction id, sale time, price). */
+	public void setEndedListener(Consumer<List<dev.binwatch.api.EndedAuction>> listener) {
+		this.endedListener = listener == null ? e -> {
 		} : listener;
 	}
 
@@ -235,6 +243,11 @@ public final class BinWatchService implements AutoCloseable {
 			@Override
 			public void onFirstSeen(List<AuctionCollector.FirstSeen> firstSeen, PriceIndex index) {
 				evaluate(firstSeen, index, false);
+			}
+
+			@Override
+			public void onEnded(List<dev.binwatch.api.EndedAuction> sold) {
+				endedListener.accept(sold);
 			}
 
 			@Override
@@ -748,6 +761,11 @@ public final class BinWatchService implements AutoCloseable {
 
 	public WebhookClient webhookClient() {
 		return webhook;
+	}
+
+	/** The profit tracker webhook from secrets.json; never log it. Empty when not set. */
+	public String profitWebhookUrl() {
+		return secrets.hasProfitWebhook() ? secrets.discordProfitWebhookUrl : "";
 	}
 
 	/** The alert webhook URL from secrets.json or the environment; never log it. Empty when not set. */

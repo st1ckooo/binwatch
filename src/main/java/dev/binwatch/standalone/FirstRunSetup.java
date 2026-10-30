@@ -68,26 +68,64 @@ final class FirstRunSetup {
 	 * there is none and none could be obtained.
 	 */
 	boolean ensureWebhook(boolean force) throws IOException {
-		ConfigManager.LoadResult<Secrets> loaded = files.loadSecrets();
-		restrictToOwner(files.secretsFile());
-		Secrets secrets = loaded.value();
-		if (!loaded.ok()) {
-			loaded.errors().forEach(e -> out.line("CONFIG", e));
-		}
+		Secrets secrets = loadSecrets();
 		if (secrets.hasWebhook() && !force) {
 			return true;
 		}
-		out.line("CONFIG", "A Discord webhook is needed: Discord channel → Edit Channel → Integrations → Webhooks → New "
-				+ "Webhook → Copy Webhook URL.");
+		out.line("CONFIG", "Discord webhook for the AH Flipper board: Discord channel → Edit Channel → Integrations → "
+				+ "Webhooks → New Webhook → Copy Webhook URL.");
+		String url = askWebhook("the AH Flipper board", secrets.hasWebhook(), false);
+		if (url == null) {
+			return secrets.hasWebhook();
+		}
+		secrets.discordWebhookUrl = url;
+		saveSecrets(secrets);
+		out.line("CONFIG", "Webhook saved to " + files.secretsFile() + " (readable only by your user).");
+		return true;
+	}
+
+	/** Asks for the optional profit tracker webhook; Enter skips it or keeps the current one. */
+	void askProfitWebhook() throws IOException {
+		Secrets secrets = loadSecrets();
+		out.line("CONFIG", "Optional: a second webhook, in another channel, for the profit tracker (flips that were "
+				+ "still unsold when alerted, and how long they stayed buyable).");
+		String url = askWebhook("the profit tracker", secrets.hasProfitWebhook(), true);
+		if (url == null) {
+			out.line("CONFIG", secrets.hasProfitWebhook() ? "Profit tracker webhook unchanged."
+					: "No profit tracker webhook: its results are only shown in the console (add one with --setup).");
+			return;
+		}
+		secrets.discordProfitWebhookUrl = url;
+		saveSecrets(secrets);
+		out.line("CONFIG", "Profit tracker webhook saved.");
+	}
+
+	private Secrets loadSecrets() {
+		ConfigManager.LoadResult<Secrets> loaded = files.loadSecrets();
+		restrictToOwner(files.secretsFile());
+		if (!loaded.ok()) {
+			loaded.errors().forEach(e -> out.line("CONFIG", e));
+		}
+		return loaded.value();
+	}
+
+	/** A webhook URL that passed the checks, or null when kept, skipped or no input is available. Never echoed. */
+	private String askWebhook(String forWhat, boolean hasCurrent, boolean optional) {
+		String hint = hasCurrent ? ", Enter keeps the current one" : optional ? ", Enter skips" : "";
 		for (int attempt = 0; attempt < 5; attempt++) {
-			String url = in.read("Paste the Discord webhook URL (input is hidden): ", true);
+			String url = in.read("Paste the webhook URL for " + forWhat + " (input is hidden" + hint + "): ", true);
 			if (url == null) {
-				out.line("CONFIG", "No input available. Set " + Secrets.ENV_WEBHOOK + " or put \"discordWebhookUrl\" in "
-						+ files.secretsFile() + ", or run in a terminal.");
-				return false;
+				if (!optional && !hasCurrent) {
+					out.line("CONFIG", "No input available. Set " + Secrets.ENV_WEBHOOK + " or put \"discordWebhookUrl\" in "
+							+ files.secretsFile() + ", or run in a terminal.");
+				}
+				return null;
 			}
 			url = url.trim();
 			if (url.isEmpty()) {
+				if (hasCurrent || optional) {
+					return null;
+				}
 				continue;
 			}
 			String problem = Secrets.validateWebhookUrl(url);
@@ -107,13 +145,10 @@ final class FirstRunSetup {
 					continue;
 				}
 			}
-			secrets.discordWebhookUrl = url;
-			saveSecrets(secrets);
-			out.line("CONFIG", "Webhook saved to " + files.secretsFile() + " (readable only by your user).");
-			return true;
+			return url;
 		}
 		out.line("CONFIG", "No valid webhook entered.");
-		return false;
+		return null;
 	}
 
 	/** Asks for the main thresholds, Enter keeping each current value; saves config.json when anything changed. */
